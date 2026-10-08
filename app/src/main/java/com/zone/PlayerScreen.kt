@@ -148,7 +148,8 @@ fun PlayerContent(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .background(MaterialTheme.colorScheme.background),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top
     ) {
@@ -167,7 +168,7 @@ fun PlayerContent(
                 .fillMaxWidth(1f)
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             if (artwork != null) {
                 Image(

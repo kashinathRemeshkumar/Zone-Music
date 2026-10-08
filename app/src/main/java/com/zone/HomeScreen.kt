@@ -4,6 +4,7 @@ package com.zone
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,7 +34,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -102,21 +104,8 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
             .distinctBy { it.uri }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            NowPlayingPill(
-                title = engine.title,
-                artist = engine.artist,
-                isPlaying = engine.isPlaying,
-                onPlayPause = { if (engine.isPlaying) engine.pause() else engine.play() },
-                onClick = onPillClick,
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-        }
-    ) { innerPadding ->
+    Box(Modifier.fillMaxSize()
+        .navigationBarsPadding()){
         HomeScreenUI(
             hasFolder = sources?.isNotEmpty() == true,
             onAddFolder = { launcher.launch(null) },
@@ -126,10 +115,23 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                 engine.load(song.uri)
                 engine.play()
                 onPillClick()
-            },
-            modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())
+            })
+        NowPlayingPill(
+            title = engine.title,
+            artist = engine.artist,
+            isPlaying = engine.isPlaying,
+            albumArt=engine.artwork,
+            onPlayPause = { if (engine.isPlaying) engine.pause() else engine.play() },
+            onClick = onPillClick,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+
+
+
         )
+
     }
+
 }
 
 @Composable
@@ -189,9 +191,10 @@ fun HomeScreenUI(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(30.dp))
-                    .padding(bottom = 30.dp)
-                    .background(color = MaterialTheme.colorScheme.surface),
+                    .padding(bottom = 20.dp, start = 10.dp, end = 10.dp)
+                    .clip(RoundedCornerShape(25.dp))
+                    .background(color = MaterialTheme.colorScheme.surface)
+                    ,
                 contentPadding = PaddingValues(horizontal = 10.dp)
             ) {
                 itemsIndexed(songs ?: emptyList()) { index, song ->
@@ -255,13 +258,14 @@ fun NowPlayingPill(
     isPlaying: Boolean,
     onPlayPause: () -> Unit,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    albumArt: ImageBitmap?
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(64.dp)
-            .clip(RoundedCornerShape(32.dp))
+            .height(66.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable { onClick() }
             .padding(horizontal = 12.dp),
@@ -269,15 +273,25 @@ fun NowPlayingPill(
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(50.dp)
+                .offset(5.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surface)
-        )
+        ){
+            if (albumArt != null) {
+                Image(
+                    bitmap = albumArt,
+                    contentDescription = "Album art",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
 
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(start = 12.dp)
+                .offset(x = 22.dp)
         ) {
             Text(
                 text = title.ifEmpty { "Nothing playing" },
@@ -298,7 +312,8 @@ fun NowPlayingPill(
             Icon(
                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = if (isPlaying) "Pause" else "Play",
-                tint = MaterialTheme.colorScheme.onBackground
+                tint = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.size(35.dp)
             )
         }
     }
@@ -313,7 +328,8 @@ fun NowPlayingPillPreview() {
             artist = "livetune",
             isPlaying = true,
             onPlayPause = {},
-            onClick = {}
+            onClick = {},
+            albumArt = null
         )
     }
 }
