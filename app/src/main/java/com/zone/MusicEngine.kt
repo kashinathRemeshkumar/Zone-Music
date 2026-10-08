@@ -19,19 +19,14 @@ class MusicEngine(context: Context) {
 
     var title by mutableStateOf("")
         private set
-
     var artist by mutableStateOf("")
         private set
-
     var album by mutableStateOf("")
         private set
-
     var artwork by mutableStateOf<ImageBitmap?>(null)
         private set
-
     var duration by mutableStateOf(0L)
         private set
-
     var position by mutableStateOf(0L)
         private set
 
