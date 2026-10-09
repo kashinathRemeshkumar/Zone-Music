@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,10 +42,12 @@ class MainActivity : ComponentActivity() {
 
                     val navController = rememberNavController()
 
-                    NavHost(navController = navController, startDestination = "home", enterTransition = { slideInVertically(initialOffsetY = { it }) },
-                        exitTransition = { ExitTransition.None },
-                        popExitTransition={slideOutVertically(targetOffsetY = { it })},
-                        popEnterTransition = { EnterTransition.None }) {
+                    NavHost(navController = navController, startDestination = "home",
+                        enterTransition = { slideInVertically(initialOffsetY = { it },animationSpec = tween(durationMillis = 400)) },
+                        exitTransition = { ExitTransition.None},
+                        popExitTransition={slideOutVertically(targetOffsetY = { it },animationSpec = tween(durationMillis = 400))},
+                        popEnterTransition = { EnterTransition.None })
+                    {
                         composable("home") { HomeScreen(engine = engine, onPillClick = { navController.navigate("player")}) }
 
                         composable("player") { PlayerScreen(engine = engine)}
