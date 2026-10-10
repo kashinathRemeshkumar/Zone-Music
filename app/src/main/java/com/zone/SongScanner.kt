@@ -3,7 +3,10 @@ package com.zone
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 data class Song(
     val fileName: String,
@@ -19,31 +22,48 @@ class SongScanner {
         "mp3", "flac", "m4a", "wav", "ogg", "opus", "aac", "wma"
     )
 
-    fun scanFolder(context: Context, folderUri: Uri): List<Song> {
-        val root = DocumentFile.fromTreeUri(context, folderUri) ?: return emptyList()
-        return scanDocument(root).map { it.copy(source = folderUri.toString()) }
-    }
+    suspend fun scanFolder(context: Context, folderUri: Uri): List<Song> {
+        val resolver = context.contentResolver
+        val source = folderUri.toString()
+        val result = mutableListOf<Song>()
+        val pending = ArrayDeque<String>()
+        pending.add(DocumentsContract.getTreeDocumentId(folderUri))
 
-    private fun scanDocument(folder: DocumentFile): List<Song> {
-        val songs = mutableListOf<Song>()
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
 
-        for (file in folder.listFiles()) {
-            if (file.isDirectory) {
-                songs.addAll(scanDocument(file))
-            } else {
-                val extension = file.name
-                    ?.substringAfterLast('.', "")
-                    ?.lowercase()
+        while (pending.isNotEmpty()) {
+            currentCoroutineContext().ensureActive()   // lets a new scan cancel this one
+            val dirId = pending.removeFirst()
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(folderUri, dirId)
 
-                val isAudio = file.type?.startsWith("audio/") == true ||
-                        extension in audioExtensions
+            resolver.query(childrenUri, projection, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue
+                    val name = c.getString(1) ?: continue
+                    val mime = c.getString(2)
 
-                if (isAudio) {
-                    songs.add(Song(file.name ?: "Unknown", file.uri))
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        pending.add(id)
+                    } else {
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        if (mime?.startsWith("audio/") == true || ext in audioExtensions) {
+                            result.add(
+                                Song(
+                                    fileName = name,
+                                    uri = DocumentsContract.buildDocumentUriUsingTree(folderUri, id),
+                                    source = source
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }
-        return songs
+        return result
     }
 
     // Next step: call this on Dispatchers.IO for each song
