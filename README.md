@@ -1,89 +1,114 @@
 # Zone Music
 
-A modern, dark-themed local music player for Android, built with Kotlin, Jetpack Compose and Media3 (ExoPlayer).
+A local-first music player for Android, built with Jetpack Compose and Media3 (ExoPlayer). Pick the folders your music lives in and Zone scans them, reads the tags and plays everything with a clean, gesture-driven player.
 
-Pick your music folder once and Zone scans it for songs and plays them. No account, no ads, no internet connection needed.
-
-> **Status:** work in progress. The player screen is finished. The song library (folder picker, scanning, caching) is being built.
-
-## Screenshots
-
-<!-- Add screenshots here, for example:
-![Player](screenshots/player.png)
-![Home](screenshots/home.png)
--->
+> **Status:** early development. Local playback works today. Google Drive streaming and Android Auto are the next milestones (see the [Roadmap](#roadmap)).
 
 ## Features
 
-**Working now**
-- Now Playing screen with album art read from the file's metadata
-- Song title and artist taken from the file's tags
-- Seek bar you can drag to jump to any point, with current time and total length
-- Play / pause, previous and next
-- Shuffle and repeat modes (off, repeat one, repeat all)
-- Dark Material 3 theme
-- Navigation between the home screen and the player
+### Library
+- **Folder-based library:** choose one or more folders with the system folder picker (Storage Access Framework), so no broad storage permission is needed.
+- **Fast scanning:** folders are listed with `DocumentsContract` queries instead of per-file calls, which keeps big libraries quick.
+- **Background refresh:** the library rescans when the app returns to the foreground (throttled), picks up new songs, and drops deleted ones.
+- **Incremental tag reading:** tags are only read for new files, in small batches on a limited thread pool, and saved to a JSON cache as it goes.
+- **Instant start:** the cached library is shown immediately, then refreshed in the background.
+- **Alphabetical order:** songs are sorted by title using a locale-aware collator.
+- **Album art thumbnails:** loaded lazily for visible rows, with a memory cache and a disk cache.
 
-**In progress**
-- Choose a music folder with the system folder picker (no storage permission required)
-- Recursive scan of the folder for audio files (mp3, flac, m4a, wav, ogg, opus, aac, wma), listed A to Z
-- Remember the chosen folder between launches (Jetpack DataStore)
-- JSON cache of the song list, so the library loads instantly on start
+### Player
+- **Now Playing screen** with a blurred album-art background and colours taken from the artwork.
+- **Swipe the album art** left or right to change tracks. The neighbouring covers slide in as you drag.
+- **Pull down to dismiss:** the player is an overlay that follows your finger and reveals the library underneath.
+- **Queue sheet** showing the playlist the engine is using, with the current song highlighted. Tap a row to jump to it.
+- **Shuffle** that keeps the current song first and shuffles the rest, and the queue shows the real play order.
+- **Repeat modes:** off, one, all.
+- **Seek bar**, play/pause, previous (restarts the song after 3 seconds) and next.
+- **Press feedback** on buttons and rows.
+- **Mini player pill** on the home screen.
 
-**Planned**
-- Playlist and queue, so next, previous, shuffle and repeat work across the whole library
-- Bottom mini player on the home screen
-- Search
-- Background playback with notification and lock-screen controls
-- ViewModel architecture and resuming the last played song
+## Tech stack
 
-## Built with
-
-| Area | Technology |
+| Area | Library |
 |---|---|
-| Language | Kotlin |
 | UI | Jetpack Compose, Material 3 |
-| Audio | Media3 ExoPlayer |
-| Navigation | Navigation Compose |
-| Folder access | Storage Access Framework, `DocumentFile` |
+| Playback | Media3 / ExoPlayer |
 | Settings | Jetpack DataStore (Preferences) |
+| Colours from artwork | AndroidX Palette |
+| File access | Storage Access Framework, `DocumentsContract` |
+| Concurrency | Kotlin Coroutines |
 
 ## Project structure
 
 ```
 app/src/main/java/com/zone/
-├── MainActivity.kt      # entry point, navigation host
-├── MusicEngine.kt       # wraps ExoPlayer, exposes playback state to the UI
-├── HomeScreen.kt        # song library screen
-├── PlayerScreen.kt      # Now Playing screen (PlayerScreen + PlayerContent)
-├── SongScanner.kt       # recursive folder scan, Song data class
-├── AppSettings.kt       # DataStore settings (folder, last song, shuffle, repeat)
-└── ui/theme/            # colors, typography, dark theme
+├── MainActivity.kt    Hosts the home screen and the player overlay
+├── HomeScreen.kt      Library list, mini player pill, thumbnail loading
+├── PlayerScreen.kt    Now Playing UI, art carousel, queue sheet
+├── MusicEngine.kt     ExoPlayer wrapper that exposes Compose state
+├── SongScanner.kt     Folder scanning and tag reading
+├── SongCache.kt       JSON cache of scanned songs
+└── AppSettings.kt     DataStore-backed settings (folders, last played, ...)
 ```
-
-`PlayerScreen` connects the screen to the engine, and `PlayerContent` only draws the UI from plain values, which keeps it easy to preview.
 
 ## Getting started
 
-1. Clone the repository:
-   ```
+1. Clone the repository.
+   ```bash
    git clone https://github.com/kashinathRemeshkumar/Zone-Music.git
    ```
-2. Open the project in the latest stable Android Studio.
-3. Let Gradle sync, then run the app on an emulator or a real device.
+2. Open it in Android Studio.
+3. Let Gradle sync, then run the `app` configuration on a device or emulator.
+4. Tap **Click to add folder** on the home screen and choose a folder that contains music.
 
 ## Roadmap
 
-- [x] Player screen with seek bar and controls
-- [x] Shuffle and repeat
-- [x] Home and player navigation
-- [ ] Folder picker and recursive scan
-- [ ] Persist folder and cache the song list
-- [ ] Real song list and tap to play
-- [ ] Playlist, queue and mini player
-- [ ] Background playback service
-- [ ] Search
+### Google Drive streaming (planned)
+Stream music straight from Google Drive without downloading it first.
+- [ ] Sign in with Google and request read-only Drive access
+- [ ] Choose Drive folders as library sources, next to local folders
+- [ ] List and scan audio files in Drive folders
+- [ ] Stream through ExoPlayer with authorised requests
+- [ ] Read tags and artwork for remote files, and cache the metadata
+- [ ] Optional offline caching of played songs
+- [ ] Handle token refresh, offline mode and network errors
 
-## Author
+### Android Auto (planned)
+Browse and control the library from the car's display.
+- [ ] Move playback into a `MediaLibraryService` backed by a `MediaSession`, so audio keeps playing when the app is closed
+- [ ] Add a playback notification with media controls
+- [ ] Expose a browsable library tree (songs, and later artists and albums) to Android Auto
+- [ ] Support voice commands and steering-wheel controls
+- [ ] Test with the Android Auto Desktop Head Unit
 
-**Kashinath** — [GitHub](https://github.com/kashinathRemeshkumar) · [Portfolio](https://kashinath.qzz.io)
+Moving playback into a service comes first, because both Android Auto and background playback depend on it.
+
+### Other ideas
+- Search
+- Artist and album views
+- Playlists and queue editing
+- Sleep timer
+- Equalizer
+
+## Contributing
+
+This is a personal project, but issues and suggestions are welcome.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+```
+Copyright 2026 Kashinath Remeshkumar
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
