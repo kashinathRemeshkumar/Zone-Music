@@ -86,8 +86,7 @@ Moving playback into a service comes first, because both Android Auto and backgr
 - Search
 - Artist and album views
 - Playlists and queue editing
-- Sleep timer
-- Equalizer
+
 
 ## Contributing
 
