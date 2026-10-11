@@ -2,7 +2,20 @@
 
 A local-first music player for Android, built with Jetpack Compose and Media3 (ExoPlayer). Pick the folders your music lives in and Zone scans them, reads the tags and plays everything with a clean, gesture-driven player.
 
-> **Status:** early development. Local playback works today. Google Drive streaming and Android Auto are the next milestones (see the [Roadmap](#roadmap)).
+> **Status:** alpha (v0.1.0-alpha01). Local playback, background playback, session restore and Android Auto browsing and playback work today. Search in Android Auto is not done yet, and Google Drive streaming is planned (see the [Roadmap](#roadmap)).
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="img/home.jpeg" alt="Home screen" width="300"></td>
+    <td align="center"><img src="img/player.jpeg" alt="Player screen" width="300"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Home</b></td>
+    <td align="center"><b>Now Playing</b></td>
+  </tr>
+</table>
 
 ## Features
 
@@ -26,12 +39,25 @@ A local-first music player for Android, built with Jetpack Compose and Media3 (E
 - **Press feedback** on buttons and rows.
 - **Mini player pill** on the home screen.
 
+### Background playback
+- **Keeps playing when the app is closed**, through a `MediaLibraryService` backed by a `MediaSession`.
+- **Notification controls** for play/pause, previous and next. Tapping the notification opens the app.
+- **Session restore:** the queue, current song, shuffle and repeat state are saved and restored on the next launch.
+- **Audio handling:** pauses when headphones are unplugged and respects audio focus.
+
+### Android Auto
+- **Browse your library** from the car display with Songs and Folders tabs.
+- **Tap a song to play:** the whole library is queued starting from that song, and the phone's queue and now-playing UI follow along.
+- **Now-playing screen and controls** supplied by Android Auto from the player's metadata and state.
+- Tested in a car. Search is not supported yet.
+
 ## Tech stack
 
 | Area | Library |
 |---|---|
 | UI | Jetpack Compose, Material 3 |
 | Playback | Media3 / ExoPlayer |
+| Background playback and Android Auto | Media3 Session (`MediaLibraryService`) |
 | Settings | Jetpack DataStore (Preferences) |
 | Colours from artwork | AndroidX Palette |
 | File access | Storage Access Framework, `DocumentsContract` |
@@ -41,13 +67,15 @@ A local-first music player for Android, built with Jetpack Compose and Media3 (E
 
 ```
 app/src/main/java/com/zone/
-├── MainActivity.kt    Hosts the home screen and the player overlay
-├── HomeScreen.kt      Library list, mini player pill, thumbnail loading
-├── PlayerScreen.kt    Now Playing UI, art carousel, queue sheet
-├── MusicEngine.kt     ExoPlayer wrapper that exposes Compose state
-├── SongScanner.kt     Folder scanning and tag reading
-├── SongCache.kt       JSON cache of scanned songs
-└── AppSettings.kt     DataStore-backed settings (folders, last played, ...)
+├── ZoneApp.kt             Application class; owns the MusicEngine so it outlives the activity
+├── MainActivity.kt        Hosts the home screen and the player overlay
+├── HomeScreen.kt          Library list, mini player pill, thumbnail loading, session save/restore
+├── PlayerScreen.kt        Now Playing UI, art carousel, queue sheet
+├── MusicEngine.kt         ExoPlayer wrapper that exposes Compose state
+├── PlaybackService.kt     MediaLibraryService: notification, background playback, Android Auto browse tree
+├── SongScanner.kt         Folder scanning and tag reading
+├── SongCache.kt           JSON cache of scanned songs
+└── AppSettings.kt         DataStore-backed settings (folders, queue, last played, ...)
 ```
 
 ## Getting started
@@ -58,9 +86,22 @@ app/src/main/java/com/zone/
    ```
 2. Open it in Android Studio.
 3. Let Gradle sync, then run the `app` configuration on a device or emulator.
-4. Tap **Click to add folder** on the home screen and choose a folder that contains music.
+4. Allow notifications when asked (Android 13+), so the playback controls can show.
+5. Tap **Click to add folder** on the home screen and choose a folder that contains music.
 
 ## Roadmap
+
+### Android Auto (mostly done)
+Browse and control the library from the car's display. Android Auto draws its own screens, so the app supplies the library tree and playback state rather than a custom UI.
+- [x] Move playback into a `MediaLibraryService` backed by a `MediaSession`, so audio keeps playing when the app is closed
+- [x] Add a playback notification with media controls
+- [x] Expose a browsable library tree (Songs and Folders) to Android Auto
+- [x] Queue the whole library when a song is tapped in the car, and keep the phone UI in sync
+- [x] Test in a car
+- [ ] Search in Android Auto: the search button and voice commands ("Hey Google, play ...")
+- [ ] Shuffle and repeat buttons on the car's now-playing screen
+- [ ] Save the session while playing from the car with the app closed
+- [ ] Artist and album tabs in the car browse tree
 
 ### Google Drive streaming (planned)
 Stream music straight from Google Drive without downloading it first.
@@ -72,21 +113,13 @@ Stream music straight from Google Drive without downloading it first.
 - [ ] Optional offline caching of played songs
 - [ ] Handle token refresh, offline mode and network errors
 
-### Android Auto (planned)
-Browse and control the library from the car's display.
-- [ ] Move playback into a `MediaLibraryService` backed by a `MediaSession`, so audio keeps playing when the app is closed
-- [ ] Add a playback notification with media controls
-- [ ] Expose a browsable library tree (songs, and later artists and albums) to Android Auto
-- [ ] Support voice commands and steering-wheel controls
-- [ ] Test with the Android Auto Desktop Head Unit
-
-Moving playback into a service comes first, because both Android Auto and background playback depend on it.
-
 ### Other ideas
-- Search
+- Playback position save and restore
+- Search inside the app
+- Song "more options" menu
+- Folder `cover.jpg` fallback for artwork
 - Artist and album views
 - Playlists and queue editing
-
 
 ## Contributing
 
