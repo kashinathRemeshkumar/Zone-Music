@@ -9,23 +9,28 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -47,7 +52,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -67,6 +71,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -86,13 +91,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.ui.graphics.graphicsLayer
-
 
 
 enum class LoopMode { OFF, ONE, ALL }
@@ -106,14 +104,12 @@ fun formatTime(ms: Long): String {
 
 @Composable
 fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
-    var loopState by remember { mutableStateOf(LoopMode.OFF) }
     var artworkColor by remember { mutableStateOf(Color.Unspecified) }
-
 
     LaunchedEffect(engine.isPlaying) {
         while (engine.isPlaying) {
             engine.updatePosition()
-            delay(500)
+            delay(300)
         }
     }
 
@@ -137,7 +133,12 @@ fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
         position = engine.position,
         duration = engine.duration,
         isShuffle = engine.isShuffle,
-        loopMode = loopState,
+        // The engine owns the repeat mode; the screen only maps it to an icon
+        loopMode = when (engine.repeatState) {
+            Player.REPEAT_MODE_ONE -> LoopMode.ONE
+            Player.REPEAT_MODE_ALL -> LoopMode.ALL
+            else -> LoopMode.OFF
+        },
         queueOrder = engine.queueOrder,
         queue = engine.queue,
         onQueueItemClick = { engine.playAt(it) },
@@ -151,18 +152,13 @@ fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
         onPreviousTrack = { engine.skipToPrevious() },    // always goes to the previous track
         onNext = { engine.next() },
         onSeek = { engine.seekTo(it) },
-        onShuffleClick = { engine.setShuffleEnabled(!engine.isShuffle) },
+        onShuffleClick = { engine.setShuffleEnabled(!engine.isShuffle) },   // engine saves it
         onLoopClick = {
-            loopState = when (loopState) {
-                LoopMode.OFF -> LoopMode.ONE
-                LoopMode.ONE -> LoopMode.ALL
-                LoopMode.ALL -> LoopMode.OFF
-            }
             engine.setRepeatMode(
-                when (loopState) {
-                    LoopMode.OFF -> Player.REPEAT_MODE_OFF
-                    LoopMode.ONE -> Player.REPEAT_MODE_ONE
-                    LoopMode.ALL -> Player.REPEAT_MODE_ALL
+                when (engine.repeatState) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
+                    Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
+                    else -> Player.REPEAT_MODE_OFF
                 }
             )
         },
@@ -305,7 +301,7 @@ fun PlayerContent(
             // Fixed box: catches the horizontal drag. The cards inside move.
             Box(
                 modifier = Modifier
-                    .size(300.dp)
+                    .size(320.dp)
                     .draggable(
                         orientation = Orientation.Horizontal,
                         state = rememberDraggableState { delta ->
@@ -563,6 +559,7 @@ fun PlayerContent(
                 }
             }
         }
+
         if (showQueue) {
             ModalBottomSheet(
                 onDismissRequest = { showQueue = false },
@@ -584,7 +581,7 @@ fun PlayerContent(
 private fun ArtCard(bitmap: ImageBitmap?, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .size(300.dp)
+            .size(320.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
@@ -599,35 +596,6 @@ private fun ArtCard(bitmap: ImageBitmap?, modifier: Modifier = Modifier) {
     }
 }
 
-@Preview(showBackground = true)
-@Composable
-fun PlayerContentPreview() {
-    ZoneTheme {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            PlayerContent(
-                title = "Song Title",
-                artist = "Artist",
-                artwork = null,
-                artworkColor = Color.White,
-                isPlaying = false,
-                position = 30_000L,
-                duration = 215_000L,
-                isShuffle = true,
-                loopMode = LoopMode.OFF,
-                onPlayPause = {},
-                onPrevious = {},
-                onPreviousTrack = {},
-                onNext = {},
-                onSeek = {},
-                onShuffleClick = {},
-                onLoopClick = {}
-            )
-        }
-    }
-}
 @Composable
 private fun QueueList(
     queue: List<Song>,
@@ -743,5 +711,35 @@ fun PressableIconButton(
         }
     ) {
         content()
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun PlayerContentPreview() {
+    ZoneTheme {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            PlayerContent(
+                title = "Song Title",
+                artist = "Artist",
+                artwork = null,
+                artworkColor = Color.White,
+                isPlaying = false,
+                position = 30_000L,
+                duration = 215_000L,
+                isShuffle = true,
+                loopMode = LoopMode.OFF,
+                onPlayPause = {},
+                onPrevious = {},
+                onPreviousTrack = {},
+                onNext = {},
+                onSeek = {},
+                onShuffleClick = {},
+                onLoopClick = {}
+            )
+        }
     }
 }

@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
 import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -72,6 +73,7 @@ import com.zone.ui.theme.ZoneTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -106,6 +108,9 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     var lastScan by remember { mutableLongStateOf(0L) }
     // At most 2 tag-reading threads so the scan doesn't hog the CPU
     val tagDispatcher = remember { Dispatchers.IO.limitedParallelism(2) }
+
+
+
 
     val scope = rememberCoroutineScope()
 
@@ -179,6 +184,32 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
             artworkColor = Color(palette.getDarkVibrantColor(Color(0xFF003A59).toArgb()))
         }
     }
+
+    //save the last song played and other stuff
+    LaunchedEffect(engine.title, engine.mediaIndex, engine.isShuffle, engine.repeatState) {
+        val queue = engine.queue
+        val current = queue.getOrNull(engine.mediaIndex)?.uri ?: return@LaunchedEffect
+        settings.saveSession(queue.map { it.uri }, current, engine.isShuffle, engine.repeatState)
+    }
+
+    var restored by remember { mutableStateOf(false) }
+
+    LaunchedEffect(songs) {
+        if (restored || songs.isEmpty() || engine.queue.isNotEmpty()) return@LaunchedEffect
+
+
+        val savedCurrent = settings.lastPlayedUri.first() ?: return@LaunchedEffect
+        val byUri = songs.associateBy { it.uri }
+        val queue = settings.queueUris.first().mapNotNull { byUri[it] }   // skips deleted files
+        val index = queue.indexOfFirst { it.uri == savedCurrent }
+        if (index < 0) return@LaunchedEffect
+
+        restored = true
+        engine.loadPlaylist(queue, index, autoPlay = false)
+        if (settings.shuffle.first() == true) engine.setShuffleEnabled(true)
+        settings.repeatMode.first()?.let { engine.setRepeatMode(it) }
+    }
+
 
     Box(
         Modifier
