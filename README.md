@@ -9,10 +9,12 @@ A local-first music player for Android, built with Jetpack Compose and Media3 (E
 <table>
   <tr>
     <td align="center"><img src="img/home.jpeg" alt="Home screen" width="300"></td>
+    <td width="60"></td>
     <td align="center"><img src="img/player.jpeg" alt="Player screen" width="300"></td>
   </tr>
   <tr>
     <td align="center"><b>Home</b></td>
+    <td width="60"></td>
     <td align="center"><b>Now Playing</b></td>
   </tr>
 </table>
