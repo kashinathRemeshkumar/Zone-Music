@@ -38,6 +38,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -57,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +78,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -106,6 +110,15 @@ fun formatTime(ms: Long): String {
 fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
     var artworkColor by remember { mutableStateOf(Color.Unspecified) }
 
+    val context = LocalContext.current
+    val store = (context.applicationContext as ZoneApp).playlists
+    val playlists by store.playlists.collectAsState()
+
+    val currentSong = engine.queue.getOrNull(engine.mediaIndex)
+    val likedPlaylist = playlists.firstOrNull { it.id == LIKED_ID }
+    val isLiked = currentSong != null && likedPlaylist != null && currentSong.uri in likedPlaylist.uris
+
+    //simple delay to update the ui
     LaunchedEffect(engine.isPlaying) {
         while (engine.isPlaying) {
             engine.updatePosition()
@@ -113,6 +126,7 @@ fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
         }
     }
 
+    //extract the album art color for ui when the song changes
     LaunchedEffect(engine.artwork) {
         val art = engine.artwork
         if (art != null) {
@@ -133,6 +147,9 @@ fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
         position = engine.position,
         duration = engine.duration,
         isShuffle = engine.isShuffle,
+        isLiked=isLiked,
+        onLikeClick = { currentSong?.let { store.toggleSong(LIKED_ID, it.uri) }},
+
         // The engine owns the repeat mode; the screen only maps it to an icon
         loopMode = when (engine.repeatState) {
             Player.REPEAT_MODE_ONE -> LoopMode.ONE
@@ -197,7 +214,9 @@ fun PlayerContent(
     previousArtwork: ImageBitmap? = null,
     hasNext: Boolean = true,
     hasPrevious: Boolean = true,
-    mediaIndex: Int = 0
+    mediaIndex: Int = 0,
+    isLiked: Boolean,
+    onLikeClick: () -> Unit
 ) {
     val maxPosition = duration.coerceAtLeast(1L)
     val interactionSource = remember { MutableInteractionSource() }
@@ -389,6 +408,27 @@ fun PlayerContent(
                     color = MaterialTheme.colorScheme.secondaryContainer,
                     fontSize = 15.sp
                 )
+
+                IconButton(onClick = onLikeClick) {
+
+                    if(isLiked){
+                        Icon(
+                            imageVector = Icons.Filled.Favorite,
+                            contentDescription = "Like",
+                            tint = artworkColor,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    else{
+                        Icon(
+                            imageVector = Icons.Filled.FavoriteBorder,
+                            contentDescription = "Like",
+                            tint = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+
                 Text(
                     text = formatTime(maxPosition),
                     color = MaterialTheme.colorScheme.secondaryContainer,
@@ -443,7 +483,7 @@ fun PlayerContent(
                 }
             )
 
-            Spacer(modifier = Modifier.height(50.dp))
+            Spacer(modifier = Modifier.height(35.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(0.9f),
@@ -738,7 +778,9 @@ fun PlayerContentPreview() {
                 onNext = {},
                 onSeek = {},
                 onShuffleClick = {},
-                onLoopClick = {}
+                onLoopClick = {},
+                isLiked = true,
+                onLikeClick={},
             )
         }
     }

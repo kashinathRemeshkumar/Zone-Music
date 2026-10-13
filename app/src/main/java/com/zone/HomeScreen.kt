@@ -6,7 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.LruCache
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,11 +42,17 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -118,16 +126,15 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     var songs by remember { mutableStateOf(emptyList<Song>()) }
     var artworkColor by remember { mutableStateOf<Color?>(null) }
 
-
     // Rescan control
     var refreshTick by remember { mutableIntStateOf(0) }
     var lastScan by remember { mutableLongStateOf(0L) }
     // At most 2 tag-reading threads so the scan doesn't hog the CPU
     val tagDispatcher = remember { Dispatchers.IO.limitedParallelism(2) }
 
-
-
-
+    // Playlists (one shared instance from ZoneApp)
+    val store = remember { (context.applicationContext as ZoneApp).playlists }
+    val playlists by store.playlists.collectAsState()
 
     val scope = rememberCoroutineScope()
 
@@ -136,7 +143,8 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     ) { uri ->
         if (uri != null) {
             context.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             scope.launch { settings.addFolder(uri) }
         }
@@ -191,11 +199,11 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
         lastScan = System.currentTimeMillis()
     }
 
-    //Extract artwork vibrant color for the ui
+    // Extract artwork vibrant color for the ui
     LaunchedEffect(engine.artwork) {
         val art = engine.artwork
         if (art != null) {
-            val bitmap = (art as ImageBitmap).asAndroidBitmap()
+            val bitmap = art.asAndroidBitmap()
             val palette = withContext(Dispatchers.Default) {
                 Palette.from(bitmap).generate()
             }
@@ -203,7 +211,7 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
         }
     }
 
-    //save the last song played and other stuff
+    // Save the last song played and other stuff
     LaunchedEffect(engine.title, engine.mediaIndex, engine.isShuffle, engine.repeatState) {
         val queue = engine.queue
         val current = queue.getOrNull(engine.mediaIndex)?.uri ?: return@LaunchedEffect
@@ -212,7 +220,7 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
 
     var restored by remember { mutableStateOf(false) }
 
-    //restore last player state if any
+    // Restore last player state if any
     LaunchedEffect(songs) {
         if (restored || songs.isEmpty() || engine.queue.isNotEmpty()) return@LaunchedEffect
 
@@ -227,7 +235,6 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
         if (settings.shuffle.first() == true) engine.setShuffleEnabled(true)
         settings.repeatMode.first()?.let { engine.setRepeatMode(it) }
     }
-
 
     Box(
         Modifier
@@ -253,7 +260,52 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                 engine.loadPlaylist(list, index)
                 engine.play()
                 onPillClick()
-            })
+            },
+            playlists = playlists,
+            songsOf = { id -> store.songsOf(id, songs) },
+            onPlaylistSongClick = { list, index ->
+                engine.loadPlaylist(list, index)
+                onPillClick()
+            },
+            onCreatePlaylist = { name -> store.createPlaylist(name) },
+            onDeletePlaylist = { id -> store.deletePlaylist(id) },
+            onToggleSong = { playlistId, uri -> store.toggleSong(playlistId, uri) },
+            onPlayAll = { list ->
+                if (list.isNotEmpty()) {
+                    engine.setShuffleEnabled(false)
+                    engine.loadPlaylist(list, 0)
+                }
+            },
+            onShuffleAll = { list ->
+                if (list.isNotEmpty()) {
+                    engine.setShuffleEnabled(true)
+                    engine.loadPlaylist(list, list.indices.random())
+                }
+            },
+            onDeleteSong = { song ->
+                scope.launch {
+                    val deleted = withContext(Dispatchers.IO) {
+                        try {
+                            DocumentsContract.deleteDocument(context.contentResolver, song.uri)
+                        } catch (_: Exception) {
+                            false
+                        }
+                    }
+                    if (deleted) {
+                        songs = songs.filter { it.uri != song.uri }
+                        val remaining = songs
+                        withContext(Dispatchers.IO) { cache.save(remaining) }
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Couldn't delete. Re-add the folder to allow deleting.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        )
+
         NowPlayingPill(
             title = engine.title,
             artist = engine.artist,
@@ -280,6 +332,15 @@ fun HomeScreenUI(
     onRemoveFolder: (String) -> Unit,
     songs: List<Song>?,
     onSongClick: (List<Song>, Int) -> Unit,
+    playlists: List<Playlist>,
+    songsOf: (String) -> List<Song>,
+    onPlaylistSongClick: (List<Song>, Int) -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onDeletePlaylist: (String) -> Unit,
+    onToggleSong: (String, Uri) -> Unit,
+    onDeleteSong: (Song) -> Unit,
+    onPlayAll: (List<Song>) -> Unit,
+    onShuffleAll: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -310,7 +371,6 @@ fun HomeScreenUI(
             }
         }
         Spacer(modifier = Modifier.size(8.dp))
-
 
         if (!hasFolder) {
             Box(
@@ -345,15 +405,43 @@ fun HomeScreenUI(
                 }
             }
             when (tab) {
-                0 -> songUI(songs, { i -> onSongClick(songs ?: emptyList(), i) }, Modifier.weight(1f))
-                1 -> playlistUI(Modifier.weight(1f))
+                0 -> songUI(
+                    songs = songs,
+                    onSongClick = { i -> onSongClick(songs ?: emptyList(), i) },
+                    modifier = Modifier.weight(1f),
+                    playlists = playlists,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayAll = { onPlayAll(songs ?: emptyList()) },
+                    onShuffleAll = { onShuffleAll(songs ?: emptyList()) }
+                )
+
+                1 -> playlistUI(
+                    playlists = playlists,
+                    allSongs = songs ?: emptyList(),
+                    songsOf = songsOf,
+                    onSongClick = onPlaylistSongClick,
+                    onCreatePlaylist = onCreatePlaylist,
+                    onDeletePlaylist = onDeletePlaylist,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayAll = onPlayAll,
+                    onShuffleAll = onShuffleAll,
+                    modifier = Modifier.weight(1f)
+                )
+
                 2 -> folderUI(
-                    songs,
-                    folderSources,
-                    onSongClick,
-                    onAddFolder,
-                    onRemoveFolder,
-                    Modifier.weight(1f)
+                    songs = songs,
+                    folderSources = folderSources,
+                    onSongClick = onSongClick,
+                    onAddFolder = onAddFolder,
+                    onRemoveFolder = onRemoveFolder,
+                    playlists = playlists,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayAll = onPlayAll,
+                    onShuffleAll = onShuffleAll,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -361,76 +449,442 @@ fun HomeScreenUI(
 }
 
 // The Songs tab: a scrolling list of songs. Each row shows the cover, title
-// and artist. Tapping a row plays that song.
+// and artist. Tapping a row plays that song. The three-dot button opens an
+// "Add to playlist" dialog with a checkbox for every playlist.
 @Composable
 fun songUI(
     songs: List<Song>?,
     onSongClick: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    playlists: List<Playlist> = emptyList(),
+    onToggleSong: (String, Uri) -> Unit = { _, _ -> },
+    onDeleteSong: (Song) -> Unit = {},
+    onPlayAll: (() -> Unit)? = null,
+    onShuffleAll: (() -> Unit)? = null
 ) {
-    LazyColumn(
+    var menuSong by remember { mutableStateOf<Song?>(null) }          // song shown in "Add to playlist"
+    var expandedUri by remember { mutableStateOf<Uri?>(null) }        // which row's small menu is open
+    var songToDelete by remember { mutableStateOf<Song?>(null) }      // song waiting for delete confirmation
+
+    // Asks "are you sure?" before the file is deleted
+    songToDelete?.let { song ->
+        AlertDialog(
+            onDismissRequest = { songToDelete = null },
+            title = { Text("Delete song?") },
+            text = { Text("\"${song.title}\" will be permanently deleted from your device.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteSong(song)
+                    songToDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { songToDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    menuSong?.let { song ->
+        AlertDialog(
+            onDismissRequest = { menuSong = null },
+            title = { Text("Add to playlist") },
+            text = {
+                LazyColumn {
+                    items(playlists, key = { it.id }) { p ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onToggleSong(p.id, song.uri) },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = song.uri in p.uris,
+                                onCheckedChange = { onToggleSong(p.id, song.uri) }
+                            )
+                            Text(
+                                text = p.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { menuSong = null }) { Text("Done") }
+            }
+        )
+    }
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(bottom = 72.dp)
             .clip(RoundedCornerShape(topEnd = 25.dp, topStart = 25.dp))
-            .background(color = MaterialTheme.colorScheme.surface),
-        contentPadding = PaddingValues(horizontal = 10.dp)
+            .background(color = MaterialTheme.colorScheme.surface)
     ) {
-        itemsIndexed(
-            items = songs ?: emptyList(),
-            key = { _, song -> song.uri.toString() }   // stable keys = cheaper updates
-        ) { index, song ->
+        // Play and shuffle buttons, top right of the box
+        if (onPlayAll != null && onShuffleAll != null && !songs.isNullOrEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(85.dp)
-                    .padding(5.dp)
-                    .border(width = 3.dp, color = MaterialTheme.colorScheme.outline)
-                    .clickable { onSongClick(index) },
+                    .padding(end = 10.dp),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SongArtwork(
-                    uri = song.uri,
-                    modifier = Modifier
-                        .padding(start = 10.dp)
-                        .size(55.dp)
-                )
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 20.dp)
-                ) {
-                    Text(
-                        text = song.title,
-                        color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = song.artist,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                IconButton(onClick = onPlayAll) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Play all",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp)
                     )
                 }
-
-                IconButton(onClick = {}) {
+                IconButton(onClick = onShuffleAll) {
                     Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "play",
-                        tint = MaterialTheme.colorScheme.onBackground,
+                        imageVector = Icons.Filled.Shuffle,
+                        contentDescription = "Shuffle play",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp)
                     )
+                }
+            }
+        }
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 10.dp)
+        ) {
+            itemsIndexed(
+                items = songs ?: emptyList(),
+                key = { _, song -> song.uri.toString() }   // stable keys = cheaper updates
+            ) { index, song ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(85.dp)
+                        .padding(5.dp)
+                        .border(width = 3.dp, color = MaterialTheme.colorScheme.outline)
+                        .clickable { onSongClick(index) },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SongArtwork(
+                        uri = song.uri,
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .size(55.dp)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 20.dp)
+                    ) {
+                        Text(
+                            text = song.title,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = song.artist,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Box {
+                        IconButton(onClick = { expandedUri = song.uri }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = "More options",
+                                tint = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expandedUri == song.uri,
+                            onDismissRequest = { expandedUri = null }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Add to playlist") },
+                                onClick = {
+                                    expandedUri = null
+                                    menuSong = song
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete song") },
+                                onClick = {
+                                    expandedUri = null
+                                    songToDelete = song
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-// The Playlists tab. Empty for now, to be built later.
+// The Playlists tab. Level 1 is the list of playlists with a "New playlist"
+// row. Tapping a playlist opens level 2, which shows its songs.
 @Composable
-fun playlistUI(modifier: Modifier = Modifier) {
-    // yours to fill in
+fun playlistUI(
+    playlists: List<Playlist>,
+    allSongs: List<Song>,
+    songsOf: (String) -> List<Song>,
+    onSongClick: (List<Song>, Int) -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onDeletePlaylist: (String) -> Unit,
+    onToggleSong: (String, Uri) -> Unit,
+    onDeleteSong: (Song) -> Unit,
+    onPlayAll: (List<Song>) -> Unit,
+    onShuffleAll: (List<Song>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showPicker by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    var toDelete by remember { mutableStateOf<Playlist?>(null) }
+
+    BackHandler(enabled = selectedId != null) { selectedId = null }
+
+    // Dialog: type a name for a new playlist
+    if (showCreate) {
+        AlertDialog(
+            onDismissRequest = { newName = ""; showCreate = false },
+            title = { Text("New playlist") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    singleLine = true,
+                    label = { Text("Name") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (newName.isNotBlank()) onCreatePlaylist(newName.trim())
+                    newName = ""
+                    showCreate = false
+                }) { Text("Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { newName = ""; showCreate = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Dialog: "are you sure?" before deleting a playlist
+    toDelete?.let { p ->
+        AlertDialog(
+            onDismissRequest = { toDelete = null },
+            title = { Text("Delete playlist?") },
+            text = { Text("\"${p.name}\" will be deleted. Your songs are not deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeletePlaylist(p.id)
+                    toDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { toDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    val current = playlists.firstOrNull { it.id == selectedId }
+
+    if (current == null) {
+        // Level 1: new playlist row, then the list of playlists
+        LazyColumn(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 72.dp)
+                .clip(RoundedCornerShape(topEnd = 25.dp, topStart = 25.dp))
+                .background(MaterialTheme.colorScheme.surface),
+            contentPadding = PaddingValues(horizontal = 10.dp)
+        ) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(70.dp)
+                        .padding(5.dp)
+                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .clickable { showCreate = true },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 15.dp).size(30.dp)
+                    )
+                    Text(
+                        text = "New playlist",
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 20.dp)
+                    )
+                }
+            }
+            items(playlists, key = { it.id }) { p ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(85.dp)
+                        .padding(5.dp)
+                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .clickable { selectedId = p.id },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f).padding(start = 20.dp)) {
+                        Text(
+                            text = p.name,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${p.uris.size} songs",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp
+                        )
+                    }
+                    // Liked Songs can't be deleted
+                    if (p.id != LIKED_ID) {
+                        IconButton(onClick = { toDelete = p }) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = "Delete playlist",
+                                tint = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Level 2: the songs inside the chosen playlist
+        val playlistSongs = songsOf(current.id)
+
+        if (showPicker) {
+            // Song picker: every song, with + to add or - to remove
+            BackHandler { showPicker = false }
+            Column(modifier) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { showPicker = false }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    Text(
+                        text = "Add songs to ${current.name}",
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontSize = 18.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(bottom = 72.dp)
+                        .clip(RoundedCornerShape(topEnd = 25.dp, topStart = 25.dp))
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentPadding = PaddingValues(horizontal = 10.dp)
+                ) {
+                    items(allSongs, key = { it.uri.toString() }) { song ->
+                        val inPlaylist = song.uri in current.uris
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(85.dp)
+                                .padding(5.dp)
+                                .border(3.dp, MaterialTheme.colorScheme.outline),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SongArtwork(
+                                uri = song.uri,
+                                modifier = Modifier
+                                    .padding(start = 10.dp)
+                                    .size(55.dp)
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 20.dp)
+                            ) {
+                                Text(
+                                    text = song.title,
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = song.artist,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(onClick = { onToggleSong(current.id, song.uri) }) {
+                                Icon(
+                                    imageVector = if (inPlaylist) Icons.Filled.Remove else Icons.Filled.Add,
+                                    contentDescription = if (inPlaylist) "Remove from playlist" else "Add to playlist",
+                                    tint = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            Column(modifier) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { selectedId = null }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    Text(
+                        text = current.name,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontSize = 18.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // + button, top right: opens the song picker
+                    IconButton(onClick = { showPicker = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = "Add songs",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                }
+                songUI(
+                    songs = playlistSongs,
+                    onSongClick = { i -> onSongClick(playlistSongs, i) },
+                    modifier = Modifier.weight(1f),
+                    playlists = playlists,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayAll = { onPlayAll(playlistSongs) },
+                    onShuffleAll = { onShuffleAll(playlistSongs) }
+                )
+            }
+        }
+    }
 }
 
 // The Folders tab. It shows the folders you added, with a button to add more
@@ -443,6 +897,11 @@ fun folderUI(
     onSongClick: (List<Song>, Int) -> Unit,
     onAddFolder: () -> Unit,
     onRemoveFolder: (String) -> Unit,
+    playlists: List<Playlist>,
+    onToggleSong: (String, Uri) -> Unit,
+    onDeleteSong: (Song) -> Unit,
+    onPlayAll: (List<Song>) -> Unit,
+    onShuffleAll: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
@@ -569,12 +1028,16 @@ fun folderUI(
             songUI(
                 songs = folderSongs,
                 onSongClick = { i -> onSongClick(folderSongs, i) },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                playlists = playlists,
+                onToggleSong = onToggleSong,
+                onDeleteSong = onDeleteSong,
+                onPlayAll = { onPlayAll(folderSongs) },
+                onShuffleAll = { onShuffleAll(folderSongs) }
             )
         }
     }
 }
-
 
 // The small bar at the bottom showing the current song, with a play/pause
 // button. Tapping it opens the full player.
@@ -602,7 +1065,7 @@ fun NowPlayingPill(
     ) {
         Box(
             modifier = Modifier
-                .size(50.dp)
+                .size(55.dp)
                 .offset(5.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surface)
@@ -665,7 +1128,6 @@ fun NowPlayingPillPreview() {
     }
 }
 
-
 // Preview of the home screen, only for viewing in Android Studio
 @Composable
 @Preview(showBackground = true)
@@ -677,7 +1139,16 @@ fun HomeScreenPreview() {
             folderSources = emptySet(),
             onRemoveFolder = {},
             songs = null,
-            onSongClick = { _, _ -> }
+            onSongClick = { _, _ -> },
+            playlists = emptyList(),
+            songsOf = { emptyList() },
+            onPlaylistSongClick = { _, _ -> },
+            onCreatePlaylist = {},
+            onDeletePlaylist = {},
+            onToggleSong = { _, _ -> },
+            onDeleteSong = {},
+            onPlayAll = {},
+            onShuffleAll = {}
         )
     }
 }
@@ -734,7 +1205,7 @@ object SongArt {
             val bytes = try {
                 retriever.setDataSource(context, uri)
                 retriever.embeddedPicture
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             } finally {
                 retriever.release()
@@ -804,7 +1275,6 @@ fun SongArtwork(uri: Uri, modifier: Modifier = Modifier) {
         }
     }
 }
-
 
 // Turns a folder's long address into a short name that is easy to read
 private fun folderName(source: String): String {
