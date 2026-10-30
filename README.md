@@ -2,56 +2,65 @@
 
 A local-first music player for Android, built with Jetpack Compose and Media3 (ExoPlayer). Pick the folders your music lives in and Zone scans them, reads the tags and plays everything with a clean, gesture-driven player.
 
-> **Status:** alpha (v0.1.0-alpha01). Local playback, background playback, session restore and Android Auto browsing and playback work today. Search in Android Auto is not done yet, and Google Drive streaming is planned (see the [Roadmap](#roadmap)).
+> **Status:** Stable (v1.0.0). The first stable release is out! Local playback, background playback, session restore, playlists, queue management and Android Auto browsing and playback are available. Google Drive music streaming is the only remaining planned major feature (see the [Roadmap](#roadmap)).
 
 ## Screenshots
 
 <table>
   <tr>
-    <td align="center"><img src="img/home.jpeg" alt="Home screen" width="300"></td>
+    <td align="center"><img src="img/home.jpeg" width="300"></td>
     <td width="60"></td>
-    <td align="center"><img src="img/player.jpeg" alt="Player screen" width="300"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Home</b></td>
-    <td width="60"></td>
-    <td align="center"><b>Now Playing</b></td>
+    <td align="center"><img src="img/player.jpeg" width="300"></td>
   </tr>
 </table>
 
 ## Features
 
 ### Library
-- **Folder-based library:** choose one or more folders with the system folder picker (Storage Access Framework), so no broad storage permission is needed.
-- **Fast scanning:** folders are listed with `DocumentsContract` queries instead of per-file calls, which keeps big libraries quick.
-- **Background refresh:** the library rescans when the app returns to the foreground (throttled), picks up new songs, and drops deleted ones.
-- **Incremental tag reading:** tags are only read for new files, in small batches on a limited thread pool, and saved to a JSON cache as it goes.
-- **Instant start:** the cached library is shown immediately, then refreshed in the background.
-- **Alphabetical order:** songs are sorted by title using a locale-aware collator.
-- **Album art thumbnails:** loaded lazily for visible rows, with a memory cache and a disk cache.
+
+- **Folder-based library:** Choose one or more folders with the system folder picker (Storage Access Framework), so no broad storage permission is needed.
+- **Fast scanning:** Folders are listed with `DocumentsContract` queries instead of per-file calls, which keeps big libraries quick.
+- **Background refresh:** The library rescans when the app returns to the foreground (throttled), picks up new songs, and drops deleted ones.
+- **Incremental tag reading:** Tags are only read for new files, in small batches on a limited thread pool, and saved to a JSON cache as it goes.
+- **Instant start:** The cached library is shown immediately, then refreshed in the background.
+- **Alphabetical order:** Songs are sorted by title using a locale-aware collator.
+- **Album art thumbnails:** Loaded lazily for visible rows, with a memory cache and a disk cache.
+- **Search:** Find songs in your local library.
+- **Playlists:** Create and manage playlists, including Liked Songs.
+- **Library organization:** Browse songs, artists, albums and folders.
 
 ### Player
+
 - **Now Playing screen** with a blurred album-art background and colours taken from the artwork.
 - **Swipe the album art** left or right to change tracks. The neighbouring covers slide in as you drag.
-- **Pull down to dismiss:** the player is an overlay that follows your finger and reveals the library underneath.
+- **Pull down to dismiss:** The player is an overlay that follows your finger and reveals the library underneath.
 - **Queue sheet** showing the playlist the engine is using, with the current song highlighted. Tap a row to jump to it.
 - **Shuffle** that keeps the current song first and shuffles the rest, and the queue shows the real play order.
-- **Repeat modes:** off, one, all.
+- **Repeat modes:** Off, one, all.
 - **Seek bar**, play/pause, previous (restarts the song after 3 seconds) and next.
 - **Press feedback** on buttons and rows.
 - **Mini player pill** on the home screen.
+- **Queue management:** Reorder, remove and play songs next.
+- **Song options:** Add songs to playlists, manage the queue and delete songs.
 
 ### Background playback
+
 - **Keeps playing when the app is closed**, through a `MediaLibraryService` backed by a `MediaSession`.
 - **Notification controls** for play/pause, previous and next. Tapping the notification opens the app.
-- **Session restore:** the queue, current song, shuffle and repeat state are saved and restored on the next launch.
-- **Audio handling:** pauses when headphones are unplugged and respects audio focus.
+- **Session restore:** The queue, current song, shuffle and repeat state are saved and restored on the next launch.
+- **Playback position restore:** Remembers where playback stopped and restores the position on the next launch.
+- **Audio handling:** Pauses when headphones are unplugged and respects audio focus.
 
 ### Android Auto
-- **Browse your library** from the car display with Songs and Folders tabs.
-- **Tap a song to play:** the whole library is queued starting from that song, and the phone's queue and now-playing UI follow along.
+
+- **Browse your library** from the car display with Songs, Folders, Artists and Albums.
+- **Tap a song to play:** The whole library is queued starting from that song, and the phone's queue and now-playing UI follow along.
+- **Search:** Search the music library from Android Auto.
 - **Now-playing screen and controls** supplied by Android Auto from the player's metadata and state.
-- Tested in a car. Search is not supported yet.
+- **Playback controls:** Shuffle and repeat support.
+- **Session persistence:** Playback state is saved while using Android Auto, including when the app is closed.
+- **Voice commands:** Supports compatible Android Auto voice-search interactions.
+- Tested in a car.
 
 ## Tech stack
 
@@ -67,7 +76,7 @@ A local-first music player for Android, built with Jetpack Compose and Media3 (E
 
 ## Project structure
 
-```
+```text
 app/src/main/java/com/zone/
 ├── ZoneApp.kt             Application class; owns the MusicEngine so it outlives the activity
 ├── MainActivity.kt        Hosts the home screen and the player overlay
@@ -83,9 +92,11 @@ app/src/main/java/com/zone/
 ## Getting started
 
 1. Clone the repository.
+
    ```bash
    git clone https://github.com/kashinathRemeshkumar/Zone-Music.git
    ```
+
 2. Open it in Android Studio.
 3. Let Gradle sync, then run the `app` configuration on a device or emulator.
 4. Allow notifications when asked (Android 13+), so the playback controls can show.
@@ -93,35 +104,17 @@ app/src/main/java/com/zone/
 
 ## Roadmap
 
-### Android Auto (mostly done)
-Browse and control the library from the car's display. Android Auto draws its own screens, so the app supplies the library tree and playback state rather than a custom UI.
-- [x] Move playback into a `MediaLibraryService` backed by a `MediaSession`, so audio keeps playing when the app is closed
-- [x] Add a playback notification with media controls
-- [x] Expose a browsable library tree (Songs and Folders) to Android Auto
-- [x] Queue the whole library when a song is tapped in the car, and keep the phone UI in sync
-- [x] Test in a car
-- [ ] Search in Android Auto: the search button and voice commands ("Hey Google, play ...")
-- [ ] Shuffle and repeat buttons on the car's now-playing screen
-- [ ] Save the session while playing from the car with the app closed
-- [ ] Artist and album tabs in the car browse tree
-
 ### Google Drive streaming (planned)
-Stream music straight from Google Drive without downloading it first.
-- [ ] Sign in with Google and request read-only Drive access
-- [ ] Choose Drive folders as library sources, next to local folders
-- [ ] List and scan audio files in Drive folders
-- [ ] Stream through ExoPlayer with authorised requests
-- [ ] Read tags and artwork for remote files, and cache the metadata
-- [ ] Optional offline caching of played songs
-- [ ] Handle token refresh, offline mode and network errors
 
-### Other ideas
-- Playback position save and restore
-- Search inside the app
-- Song "more options" menu
-- Folder `cover.jpg` fallback for artwork
-- Artist and album views
-- Playlists and queue editing
+Stream music straight from Google Drive without downloading it first.
+
+- [ ] Sign in with Google and request read-only Drive access.
+- [ ] Choose Drive folders as library sources, next to local folders.
+- [ ] List and scan audio files in Drive folders.
+- [ ] Stream through ExoPlayer with authorised requests.
+- [ ] Read tags and artwork for remote files, and cache the metadata.
+- [ ] Optional offline caching of played songs.
+- [ ] Handle token refresh, offline mode and network errors.
 
 ## Contributing
 
@@ -131,7 +124,7 @@ This is a personal project, but issues and suggestions are welcome.
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
 
-```
+```text
 Copyright 2026 Kashinath Remeshkumar
 
 Licensed under the Apache License, Version 2.0 (the "License");
