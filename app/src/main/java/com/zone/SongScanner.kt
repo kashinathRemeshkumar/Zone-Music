@@ -14,7 +14,8 @@ data class Song(
     val title: String = fileName,
     val artist: String = "Unknown",
     val album: String = "Unknown",
-    val source: String = ""   // the folder uri this song came from
+    val source: String = "",  // the folder uri this song came from
+    val lastModified: Long = 0L   // file's modified time; tells us when tags need re-reading
 )
 
 class SongScanner {
@@ -32,7 +33,8 @@ class SongScanner {
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
         )
 
         while (pending.isNotEmpty()) {
@@ -55,7 +57,8 @@ class SongScanner {
                                 Song(
                                     fileName = name,
                                     uri = DocumentsContract.buildDocumentUriUsingTree(folderUri, id),
-                                    source = source
+                                    source = source,
+                                    lastModified = c.getLong(3)
                                 )
                             )
                         }

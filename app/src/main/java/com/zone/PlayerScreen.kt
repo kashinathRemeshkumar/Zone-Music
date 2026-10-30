@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -48,12 +49,18 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -95,7 +102,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
-
 
 enum class LoopMode { OFF, ONE, ALL }
 
@@ -159,6 +165,9 @@ fun PlayerScreen(modifier: Modifier = Modifier, engine: MusicEngine) {
         queueOrder = engine.queueOrder,
         queue = engine.queue,
         onQueueItemClick = { engine.playAt(it) },
+        onQueueRemove = { engine.removeFromQueue(it) },
+        onQueueMoveNext = { engine.moveToNext(it) },
+        onQueueUndo = { engine.undoRemove() },
         nextArtwork = engine.nextArtwork,
         previousArtwork = engine.previousArtwork,
         hasNext = engine.hasNext,
@@ -202,6 +211,9 @@ fun PlayerContent(
     queueOrder: List<Int> = emptyList(),
     queue: List<Song> = emptyList(),
     onQueueItemClick: (Int) -> Unit = {},
+    onQueueRemove: (Int) -> Unit = {},
+    onQueueMoveNext: (Int) -> Unit = {},
+    onQueueUndo: () -> Unit = {},
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
     onPreviousTrack: () -> Unit,
@@ -223,6 +235,8 @@ fun PlayerContent(
     val isDragging by interactionSource.collectIsDraggedAsState()
     var dragPosition by remember { mutableFloatStateOf(0f) }
     var showQueue by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val snackScope = rememberCoroutineScope()
 
     // ---- Album art carousel state ----
     val artOffsetX = remember { Animatable(0f) }
@@ -231,7 +245,6 @@ fun PlayerContent(
     val artWidthPx = with(density) { 300.dp.toPx() }
     val step = artWidthPx + with(density) { 70.dp.toPx() }   // art width + gap
     var pendingReset by remember { mutableStateOf(false) }
-
 
     // Once the engine reports the new track, put the strip back at 0.
     // The centre card now holds the new art, so there is no visible change.
@@ -605,15 +618,38 @@ fun PlayerContent(
                 onDismissRequest = { showQueue = false },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ) {
-                QueueList(
-                    queue = queue,
-                    order = queueOrder.ifEmpty { queue.indices.toList() },
-                    currentIndex = mediaIndex,
-                    isShuffle = isShuffle,
-                    onItemClick = onQueueItemClick
-                )
+                Box {
+                    QueueList(
+                        queue = queue,
+                        order = queueOrder.ifEmpty { queue.indices.toList() },
+                        currentIndex = mediaIndex,
+                        isShuffle = isShuffle,
+                        onItemClick = onQueueItemClick,
+                        onRemove = { index ->
+                            val name = queue.getOrNull(index)?.title ?: ""
+                            onQueueRemove(index)
+                            snackScope.launch {
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                                val result = snackbarHostState.showSnackbar(
+                                    message = "Removed \"$name\"",
+                                    actionLabel = "Undo",
+                                    duration = SnackbarDuration.Short
+                                )
+                                if (result == SnackbarResult.ActionPerformed) onQueueUndo()
+                            }
+                        },
+                        onMoveNext = onQueueMoveNext
+                    )
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                    )
+                }
             }
         }
+
     }
 }
 
@@ -642,15 +678,18 @@ private fun QueueList(
     order: List<Int>,          // original indices in play order
     currentIndex: Int,         // original index of the playing song
     isShuffle: Boolean,
-    onItemClick: (Int) -> Unit // receives the original index
+    onItemClick: (Int) -> Unit, // receives the original index
+    onRemove: (Int) -> Unit,    // receives the original index
+    onMoveNext: (Int) -> Unit   // receives the original index
 ) {
     val currentPos = order.indexOf(currentIndex).coerceAtLeast(0)
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = (currentPos - 1).coerceAtLeast(0)
     )
 
-    // Follow the playing song when the track changes
-    LaunchedEffect(currentPos) {
+    // Follow the playing song when the track changes (not when you edit the queue)
+    val currentUri = queue.getOrNull(currentIndex)?.uri
+    LaunchedEffect(currentUri, isShuffle) {
         listState.animateScrollToItem((currentPos - 1).coerceAtLeast(0))
     }
 
@@ -671,7 +710,7 @@ private fun QueueList(
         ) {
             items(
                 items = order,
-                key = { originalIndex -> queue.getOrNull(originalIndex)?.uri.toString() }
+                key = { originalIndex -> originalIndex }   // not the uri: a song can be queued twice
             ) { originalIndex ->
                 val song = queue.getOrNull(originalIndex) ?: return@items
                 val isCurrent = originalIndex == currentIndex
@@ -717,6 +756,30 @@ private fun QueueList(
                             contentDescription = "Now playing",
                             tint = MaterialTheme.colorScheme.primary
                         )
+                    } else {
+                        var menuOpen by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(
+                                    imageVector = Icons.Filled.MoreVert,
+                                    contentDescription = "Queue options",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = menuOpen,
+                                onDismissRequest = { menuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Play next") },
+                                    onClick = { menuOpen = false; onMoveNext(originalIndex) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Remove from queue") },
+                                    onClick = { menuOpen = false; onRemove(originalIndex) }
+                                )
+                            }
+                        }
                     }
                 }
             }

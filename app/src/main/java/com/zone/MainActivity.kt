@@ -79,7 +79,6 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     var showPlayer by rememberSaveable { mutableStateOf(false) }
-                    BackHandler(enabled = showPlayer) { showPlayer = false }
 
                     Box(Modifier.fillMaxSize()) {
                         // bottom layer: always composed, never destroyed
@@ -94,6 +93,9 @@ class MainActivity : ComponentActivity() {
                             enter = slideInVertically(tween(400)) { it },
                             exit = slideOutVertically(tween(300)) { it }
                         ) {
+                            // Registered when the player appears, so Back closes the player
+                            // before the home screen's handlers (search, open playlist/folder)
+                            BackHandler { showPlayer = false }
                             DismissibleSheet(onDismiss = { showPlayer = false }) {
                                 PlayerScreen(engine = engine)
                             }

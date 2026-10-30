@@ -84,6 +84,22 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.SortByAlpha
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.palette.graphics.Palette
@@ -110,6 +126,36 @@ private val collator = Collator.getInstance().apply {
 private fun sortSongs(list: List<Song>): List<Song> =
     list.sortedWith { a, b -> collator.compare(a.title, b.title) }
 
+// How the library is ordered on the Songs and Folders tabs
+enum class SortMode(val label: String) {
+    TITLE("Title"),
+    ARTIST("Artist"),
+    RECENT("Recently added")   // really "recently modified": folders don't expose a date-added
+}
+
+private fun sortFor(list: List<Song>, mode: SortMode): List<Song> = when (mode) {
+    SortMode.TITLE -> list   // the library is already kept A-Z by title
+    SortMode.ARTIST -> list.sortedWith { a, b ->
+        val byArtist = collator.compare(a.artist, b.artist)
+        if (byArtist != 0) byArtist else collator.compare(a.title, b.title)
+    }
+    SortMode.RECENT -> list.sortedByDescending { it.lastModified }
+}
+
+// "A".."Z", or "#" for digits, symbols and non-Latin scripts (used by the fast-scroll strip)
+fun sectionLetter(text: String): String {
+    val c = foldText(text).trim().firstOrNull()?.uppercaseChar()
+    return if (c != null && c in 'A'..'Z') c.toString() else "#"
+}
+
+// One look for every row in the lists: rounded, with a thin soft outline
+private val rowShape = RoundedCornerShape(14.dp)
+
+@Composable
+private fun Modifier.rowStyle(): Modifier = this
+    .clip(rowShape)
+    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f), rowShape)
+
 // ---------- Screen ----------
 
 // The main home screen. It finds your songs, keeps the list up to date,
@@ -124,6 +170,10 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     val cache = remember { SongCache(context) }
     val sources by settings.folderUris.collectAsState(initial = null)
     var songs by remember { mutableStateOf(emptyList<Song>()) }
+    val sortIndex by settings.sortMode.collectAsState(initial = 0)
+    val sortMode = SortMode.values().getOrElse(sortIndex) { SortMode.TITLE }
+    val shownSongs = remember(songs, sortMode) { sortFor(songs, sortMode) }
+    var scanning by remember { mutableStateOf(false) }
     var artworkColor by remember { mutableStateOf<Color?>(null) }
 
     // Rescan control
@@ -164,6 +214,7 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
             .filter { it.source in currentSources }
             .distinctBy { it.uri }
         if (songs.isEmpty()) songs = sortSongs(cached)
+        scanning = songs.isEmpty()   // first run: show the progress line while we look
 
         // 2. Cheap scan: file names only, no tags
         val scanner = SongScanner()
@@ -174,16 +225,34 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                 .distinctBy { it.uri }
         }
 
-        // 3. Apply deletions right away (songs that no longer exist drop out)
-        var current = scanned.mapNotNull { cachedByUri[it.uri] }
+        // 3. Sort the scan into unchanged, new, and changed-since-last-time files.
+        //    Changed files keep their old tags on screen until the new tags are read.
+        val fresh = mutableListOf<Song>()
+        val kept = mutableListOf<Song>()
+        for (s in scanned) {
+            val old = cachedByUri[s.uri]
+            when {
+                old == null -> fresh.add(s)
+                // 0 = an old cache without dates: trust it once and just record the date
+                old.lastModified == 0L || old.lastModified == s.lastModified ->
+                    kept.add(old.copy(lastModified = s.lastModified))
+                else -> {
+                    kept.add(old)
+                    fresh.add(s)
+                }
+            }
+        }
+
+        // Apply deletions right away (songs that no longer exist drop out)
+        var current: List<Song> = kept
         val sorted = sortSongs(current)
         if (sorted != songs) songs = sorted
-        if (current.size != cached.size) {
+        if (current.toSet() != cached.toSet()) {
             withContext(Dispatchers.IO) { cache.save(current) }
         }
 
-        // 4. Read tags for NEW files in small batches, showing each batch as it finishes
-        val fresh = scanned.filter { it.uri !in cachedByUri }
+        // 4. Read tags for new and changed files in small batches, showing each batch as it finishes
+        scanning = fresh.isNotEmpty()
         for (batch in fresh.chunked(25)) {
             val tagged = withContext(tagDispatcher) {
                 batch.map {
@@ -191,11 +260,13 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                     scanner.readTags(context, it)
                 }
             }
-            current = current + tagged
+            val taggedUris = tagged.map { it.uri }.toSet()
+            current = current.filter { it.uri !in taggedUris } + tagged
             songs = sortSongs(current)
             withContext(Dispatchers.IO) { cache.save(current) }
         }
 
+        scanning = false
         lastScan = System.currentTimeMillis()
     }
 
@@ -212,10 +283,37 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     }
 
     // Save the last song played and other stuff
-    LaunchedEffect(engine.title, engine.mediaIndex, engine.isShuffle, engine.repeatState) {
+    LaunchedEffect(engine.title, engine.mediaIndex, engine.isShuffle, engine.repeatState, engine.queue) {
         val queue = engine.queue
         val current = queue.getOrNull(engine.mediaIndex)?.uri ?: return@LaunchedEffect
         settings.saveSession(queue.map { it.uri }, current, engine.isShuffle, engine.repeatState)
+        settings.saveLastPosition(engine.currentPositionMs())   // 0 on a new song, real value on a queue edit
+    }
+
+    // Keeps the pill's progress line moving when the full player isn't open
+    LaunchedEffect(engine.isPlaying) {
+        while (engine.isPlaying) {
+            engine.updatePosition()
+            delay(500)
+        }
+    }
+
+    // Remember where we are: every 5 seconds while playing, and once when playback stops
+    LaunchedEffect(engine.isPlaying) {
+        if (engine.queue.isEmpty()) return@LaunchedEffect
+        if (engine.isPlaying) {
+            while (true) {
+                delay(5_000)
+                settings.saveLastPosition(engine.currentPositionMs())
+            }
+        } else {
+            settings.saveLastPosition(engine.currentPositionMs())
+        }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (engine.queue.isNotEmpty()) {
+            scope.launch { settings.saveLastPosition(engine.currentPositionMs()) }
+        }
     }
 
     var restored by remember { mutableStateOf(false) }
@@ -229,9 +327,10 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
         val queue = settings.queueUris.first().mapNotNull { byUri[it] }   // skips deleted files
         val index = queue.indexOfFirst { it.uri == savedCurrent }
         if (index < 0) return@LaunchedEffect
+        val savedPosition = settings.lastPosition.first() ?: 0L
 
         restored = true
-        engine.loadPlaylist(queue, index, autoPlay = false)
+        engine.loadPlaylist(queue, index, autoPlay = false, startPosition = savedPosition)
         if (settings.shuffle.first() == true) engine.setShuffleEnabled(true)
         settings.repeatMode.first()?.let { engine.setRepeatMode(it) }
     }
@@ -243,6 +342,9 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     ) {
         HomeScreenUI(
             hasFolder = sources?.isNotEmpty() == true,
+            sortMode = sortMode,
+            onSortChange = { mode -> scope.launch { settings.saveSortMode(mode.ordinal) } },
+            scanning = scanning,
             onAddFolder = { launcher.launch(null) },
             folderSources = sources ?: emptySet(),
             onRemoveFolder = { source ->
@@ -255,7 +357,7 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                     } catch (_: Exception) { }
                 }
             },
-            songs = songs,
+            songs = shownSongs,
             onSongClick = { list, index ->
                 engine.loadPlaylist(list, index)
                 engine.play()
@@ -282,6 +384,14 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                     engine.loadPlaylist(list, list.indices.random())
                 }
             },
+            onPlayNext = { song ->
+                engine.playNext(song)
+                Toast.makeText(context, "Playing next", Toast.LENGTH_SHORT).show()
+            },
+            onAddToQueue = { song ->
+                engine.addToQueue(song)
+                Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+            },
             onDeleteSong = { song ->
                 scope.launch {
                     val deleted = withContext(Dispatchers.IO) {
@@ -292,6 +402,8 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
                         }
                     }
                     if (deleted) {
+                        engine.songDeleted(song.uri)            // out of the queue
+                        store.removeSongEverywhere(song.uri)    // out of every playlist
                         songs = songs.filter { it.uri != song.uri }
                         val remaining = songs
                         withContext(Dispatchers.IO) { cache.save(remaining) }
@@ -313,6 +425,11 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
             albumArt = engine.artwork,
             albumArtColor = artworkColor,
             onPlayPause = { if (engine.isPlaying) engine.pause() else engine.play() },
+            progress = {
+                if (engine.duration > 0L) {
+                    (engine.position.toFloat() / engine.duration).coerceIn(0f, 1f)
+                } else 0f
+            },
             onClick = onPillClick,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -321,12 +438,16 @@ fun HomeScreen(engine: MusicEngine, onPillClick: () -> Unit) {
     }
 }
 
-// The layout of the home screen: the title, the search button, the three tabs
-// (Songs, Playlists, Folders) and whichever tab is open. It only shows things,
-// the work happens in HomeScreen above.
+// Replace your existing HomeScreenUI() and songUI() functions with these versions.
+// Keep the rest of HomeScreen.kt unchanged. The existing imports already include
+// SortByAlpha, DropdownMenu, DropdownMenuItem, Box, Row, Spacer and related Compose APIs.
+
 @Composable
 fun HomeScreenUI(
     hasFolder: Boolean,
+    sortMode: SortMode,
+    onSortChange: (SortMode) -> Unit,
+    scanning: Boolean,
     onAddFolder: () -> Unit,
     folderSources: Set<String>,
     onRemoveFolder: (String) -> Unit,
@@ -339,38 +460,67 @@ fun HomeScreenUI(
     onDeletePlaylist: (String) -> Unit,
     onToggleSong: (String, Uri) -> Unit,
     onDeleteSong: (Song) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onAddToQueue: (Song) -> Unit,
     onPlayAll: (List<Song>) -> Unit,
     onShuffleAll: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Hoisted out of the branches so closing search keeps the tab you were on
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    BackHandler(enabled = searching) { searching = false; query = "" }
+
     Column(
         modifier
             .fillMaxSize()
             .background(color = MaterialTheme.colorScheme.background)
             .statusBarsPadding(),
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Zone Music",
-                color = MaterialTheme.colorScheme.onBackground,
-                fontSize = 20.sp,
-                modifier = Modifier.offset(x = 20.dp)
+        if (searching) {
+            SearchBar(
+                query = query,
+                onQueryChange = { query = it },
+                onClose = { searching = false; query = "" }
             )
-
-            IconButton(onClick = {}) {
-                Icon(
-                    imageVector = Icons.Filled.Search,
-                    tint = MaterialTheme.colorScheme.onBackground,
-                    contentDescription = "Search",
-                    modifier = Modifier.size(30.dp)
+        } else {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Zone Music",
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = 20.sp,
+                    modifier = Modifier.offset(x = 20.dp)
                 )
+
+                // The sort button has moved to the Songs list toolbar.
+                if (hasFolder) {
+                    IconButton(onClick = { searching = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            contentDescription = "Search",
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                }
             }
         }
-        Spacer(modifier = Modifier.size(8.dp))
+
+        if (scanning) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+            )
+        } else {
+            Spacer(modifier = Modifier.height(2.dp))
+        }
+        Spacer(modifier = Modifier.size(6.dp))
 
         if (!hasFolder) {
             Box(
@@ -385,13 +535,34 @@ fun HomeScreenUI(
                     modifier = Modifier.clickable { onAddFolder() }
                 )
             }
+        } else if (searching) {
+            SearchResults(
+                query = query,
+                songs = songs,
+                onSongClick = onSongClick,
+                playlists = playlists,
+                onToggleSong = onToggleSong,
+                onDeleteSong = onDeleteSong,
+                onPlayNext = onPlayNext,
+                onAddToQueue = onAddToQueue,
+                onPlayAll = onPlayAll,
+                onShuffleAll = onShuffleAll,
+                modifier = Modifier.weight(1f)
+            )
         } else {
-            var tab by rememberSaveable { mutableIntStateOf(0) }
-            val tabs = listOf("Songs", "Playlists", "Folders")
+            val tabs = listOf("Songs", "Playlists", "Artists", "Albums", "Folders")
 
-            TabRow(
+            // The fast-scroll letters follow the sort: none when sorting by date
+            val sectionOf: ((Song) -> String)? = when (sortMode) {
+                SortMode.TITLE -> ({ song: Song -> sectionLetter(song.title) })
+                SortMode.ARTIST -> ({ song: Song -> sectionLetter(song.artist) })
+                SortMode.RECENT -> null
+            }
+
+            ScrollableTabRow(
                 selectedTabIndex = tab,
-                containerColor = Color.Transparent,   // let your background show through
+                edgePadding = 0.dp,
+                containerColor = Color.Transparent,
                 contentColor = Color.White
             ) {
                 tabs.forEachIndexed { i, label ->
@@ -404,21 +575,30 @@ fun HomeScreenUI(
                     )
                 }
             }
+
             when (tab) {
                 0 -> songUI(
                     songs = songs,
+                    sectionOf = sectionOf,
                     onSongClick = { i -> onSongClick(songs ?: emptyList(), i) },
                     modifier = Modifier.weight(1f),
                     playlists = playlists,
                     onToggleSong = onToggleSong,
                     onDeleteSong = onDeleteSong,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
                     onPlayAll = { onPlayAll(songs ?: emptyList()) },
-                    onShuffleAll = { onShuffleAll(songs ?: emptyList()) }
+                    onShuffleAll = { onShuffleAll(songs ?: emptyList()) },
+                    sortMode = sortMode,
+                    onSortChange = onSortChange,
+                    showSort = true
                 )
 
                 1 -> playlistUI(
                     playlists = playlists,
                     allSongs = songs ?: emptyList(),
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
                     songsOf = songsOf,
                     onSongClick = onPlaylistSongClick,
                     onCreatePlaylist = onCreatePlaylist,
@@ -430,12 +610,46 @@ fun HomeScreenUI(
                     modifier = Modifier.weight(1f)
                 )
 
-                2 -> folderUI(
+                2 -> groupUI(
+                    songs = songs,
+                    groupOf = { it.artist },
+                    subtitleOf = { list -> "${list.size} songs" },
+                    showArt = false,
+                    onSongClick = onSongClick,
+                    playlists = playlists,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
+                    onPlayAll = onPlayAll,
+                    onShuffleAll = onShuffleAll,
+                    modifier = Modifier.weight(1f)
+                )
+
+                3 -> groupUI(
+                    songs = songs,
+                    groupOf = { it.album },
+                    subtitleOf = { list -> "${list.first().artist} · ${list.size} songs" },
+                    showArt = true,
+                    onSongClick = onSongClick,
+                    playlists = playlists,
+                    onToggleSong = onToggleSong,
+                    onDeleteSong = onDeleteSong,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
+                    onPlayAll = onPlayAll,
+                    onShuffleAll = onShuffleAll,
+                    modifier = Modifier.weight(1f)
+                )
+
+                4 -> folderUI(
                     songs = songs,
                     folderSources = folderSources,
                     onSongClick = onSongClick,
                     onAddFolder = onAddFolder,
                     onRemoveFolder = onRemoveFolder,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
                     playlists = playlists,
                     onToggleSong = onToggleSong,
                     onDeleteSong = onDeleteSong,
@@ -449,8 +663,7 @@ fun HomeScreenUI(
 }
 
 // The Songs tab: a scrolling list of songs. Each row shows the cover, title
-// and artist. Tapping a row plays that song. The three-dot button opens an
-// "Add to playlist" dialog with a checkbox for every playlist.
+// and artist. The sort button is now on the left of Play All and Shuffle.
 @Composable
 fun songUI(
     songs: List<Song>?,
@@ -459,12 +672,30 @@ fun songUI(
     playlists: List<Playlist> = emptyList(),
     onToggleSong: (String, Uri) -> Unit = { _, _ -> },
     onDeleteSong: (Song) -> Unit = {},
+    onPlayNext: (Song) -> Unit = {},
+    onAddToQueue: (Song) -> Unit = {},
     onPlayAll: (() -> Unit)? = null,
-    onShuffleAll: (() -> Unit)? = null
+    onShuffleAll: (() -> Unit)? = null,
+    sectionOf: ((Song) -> String)? = null,
+    sortMode: SortMode = SortMode.TITLE,
+    onSortChange: (SortMode) -> Unit = {},
+    showSort: Boolean = false
 ) {
-    var menuSong by remember { mutableStateOf<Song?>(null) }          // song shown in "Add to playlist"
-    var expandedUri by remember { mutableStateOf<Uri?>(null) }        // which row's small menu is open
-    var songToDelete by remember { mutableStateOf<Song?>(null) }      // song waiting for delete confirmation
+    var menuSong by remember { mutableStateOf<Song?>(null) }
+    var expandedUri by remember { mutableStateOf<Uri?>(null) }
+    var songToDelete by remember { mutableStateOf<Song?>(null) }
+
+    // Fast scroll: the first list position of each letter
+    val listState = rememberLazyListState()
+    val indexScope = rememberCoroutineScope()
+    val firstIndexOf = remember(songs, sectionOf) {
+        val map = LinkedHashMap<String, Int>()
+        if (sectionOf != null && songs != null && songs.size >= 40) {
+            songs.forEachIndexed { i, song -> map.putIfAbsent(sectionOf(song), i) }
+        }
+        map
+    }
+    val showIndex = firstIndexOf.size > 1
 
     // Asks "are you sure?" before the file is deleted
     songToDelete?.let { song ->
@@ -523,108 +754,341 @@ fun songUI(
             .clip(RoundedCornerShape(topEnd = 25.dp, topStart = 25.dp))
             .background(color = MaterialTheme.colorScheme.surface)
     ) {
-        // Play and shuffle buttons, top right of the box
+        // Sort on the far left; Play All and Shuffle stay on the right.
         if (onPlayAll != null && onShuffleAll != null && !songs.isNullOrEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(end = 10.dp),
-                horizontalArrangement = Arrangement.End,
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onPlayAll) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "Play all",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(26.dp)
-                    )
+                if (showSort) {
+                    Box {
+                        var sortMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { sortMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.SortByAlpha,
+                                tint = MaterialTheme.colorScheme.primary,
+                                contentDescription = "Sort songs",
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = sortMenu,
+                            onDismissRequest = { sortMenu = false }
+                        ) {
+                            SortMode.values().forEach { mode ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(if (mode == sortMode) "${mode.label}  ✓" else mode.label)
+                                    },
+                                    onClick = {
+                                        sortMenu = false
+                                        onSortChange(mode)
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
-                IconButton(onClick = onShuffleAll) {
-                    Icon(
-                        imageVector = Icons.Filled.Shuffle,
-                        contentDescription = "Shuffle play",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(26.dp)
-                    )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onPlayAll) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = "Play all",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                    IconButton(onClick = onShuffleAll) {
+                        Icon(
+                            imageVector = Icons.Filled.Shuffle,
+                            contentDescription = "Shuffle play",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                 }
             }
         }
-        LazyColumn(
-            modifier = Modifier
+
+        Box(
+            Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 10.dp,
+                    end = if (showIndex) 30.dp else 10.dp
+                )
+            ) {
+                itemsIndexed(
+                    items = songs ?: emptyList(),
+                    key = { _, song -> song.uri.toString() }
+                ) { index, song ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(85.dp)
+                            .padding(5.dp)
+                            .rowStyle()
+                            .clickable { onSongClick(index) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SongArtwork(
+                            uri = song.uri,
+                            modifier = Modifier
+                                .padding(start = 10.dp)
+                                .size(55.dp)
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 20.dp)
+                        ) {
+                            Text(
+                                text = song.title,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = song.artist,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Box {
+                            IconButton(onClick = { expandedUri = song.uri }) {
+                                Icon(
+                                    imageVector = Icons.Filled.MoreVert,
+                                    contentDescription = "More options",
+                                    tint = MaterialTheme.colorScheme.onBackground,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = expandedUri == song.uri,
+                                onDismissRequest = { expandedUri = null }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Play next") },
+                                    onClick = {
+                                        expandedUri = null
+                                        onPlayNext(song)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Add to queue") },
+                                    onClick = {
+                                        expandedUri = null
+                                        onAddToQueue(song)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Add to playlist") },
+                                    onClick = {
+                                        expandedUri = null
+                                        menuSong = song
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete song") },
+                                    onClick = {
+                                        expandedUri = null
+                                        songToDelete = song
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showIndex) {
+                LetterIndex(
+                    letters = firstIndexOf.keys.toList(),
+                    onSelect = { i ->
+                        val target = firstIndexOf.values.elementAt(i)
+                        indexScope.launch { listState.scrollToItem(target) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight(0.85f)
+                        .width(24.dp)
+                )
+            }
+        }
+    }
+}
+
+
+// The thin A-Z strip on the right of a long list. Tap or drag on it to jump.
+@Composable
+fun LetterIndex(
+    letters: List<String>,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var heightPx by remember { mutableFloatStateOf(1f) }
+    var active by remember { mutableStateOf(false) }
+
+    fun pick(y: Float) {
+        val i = ((y / heightPx) * letters.size).toInt().coerceIn(0, letters.lastIndex)
+        onSelect(i)
+    }
+
+    Column(
+        modifier
+            .onSizeChanged { heightPx = it.height.toFloat().coerceAtLeast(1f) }
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (active) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                else Color.Transparent
+            )
+            .pointerInput(letters) {
+                detectTapGestures { offset -> pick(offset.y) }
+            }
+            .pointerInput(letters) {
+                detectVerticalDragGestures(
+                    onDragStart = { offset -> active = true; pick(offset.y) },
+                    onDragEnd = { active = false },
+                    onDragCancel = { active = false }
+                ) { change, _ -> pick(change.position.y) }
+            },
+        verticalArrangement = Arrangement.SpaceEvenly,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        letters.forEach { letter ->
+            Text(
+                text = letter,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+// The Artists and Albums tabs. Level 1 lists the groups; tapping one shows its songs.
+@Composable
+fun groupUI(
+    songs: List<Song>?,
+    groupOf: (Song) -> String,
+    subtitleOf: (List<Song>) -> String,
+    showArt: Boolean,
+    onSongClick: (List<Song>, Int) -> Unit,
+    playlists: List<Playlist>,
+    onToggleSong: (String, Uri) -> Unit,
+    onDeleteSong: (Song) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onAddToQueue: (Song) -> Unit,
+    onPlayAll: (List<Song>) -> Unit,
+    onShuffleAll: (List<Song>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    val groups = remember(songs) {
+        (songs ?: emptyList())
+            .groupBy(groupOf)
+            .toList()
+            .sortedWith { a, b -> collator.compare(a.first, b.first) }
+    }
+
+    BackHandler(enabled = selected != null) { selected = null }
+
+    val current = selected
+    val currentSongs = groups.firstOrNull { it.first == current }?.second
+
+    if (current == null || currentSongs == null) {
+        LazyColumn(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 72.dp)
+                .clip(RoundedCornerShape(topEnd = 25.dp, topStart = 25.dp))
+                .background(MaterialTheme.colorScheme.surface),
             contentPadding = PaddingValues(horizontal = 10.dp)
         ) {
-            itemsIndexed(
-                items = songs ?: emptyList(),
-                key = { _, song -> song.uri.toString() }   // stable keys = cheaper updates
-            ) { index, song ->
+            items(groups, key = { it.first }) { (name, list) ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(85.dp)
                         .padding(5.dp)
-                        .border(width = 3.dp, color = MaterialTheme.colorScheme.outline)
-                        .clickable { onSongClick(index) },
+                        .rowStyle()
+                        .clickable { selected = name },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    SongArtwork(
-                        uri = song.uri,
-                        modifier = Modifier
-                            .padding(start = 10.dp)
-                            .size(55.dp)
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 20.dp)
-                    ) {
+                    if (showArt) {
+                        SongArtwork(
+                            uri = list.first().uri,
+                            modifier = Modifier
+                                .padding(start = 10.dp)
+                                .size(55.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Person,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.padding(start = 15.dp).size(40.dp)
+                        )
+                    }
+                    Column(Modifier.weight(1f).padding(start = 20.dp)) {
                         Text(
-                            text = song.title,
+                            text = name,
                             color = MaterialTheme.colorScheme.onBackground,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = song.artist,
+                            text = subtitleOf(list),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-
-                    Box {
-                        IconButton(onClick = { expandedUri = song.uri }) {
-                            Icon(
-                                imageVector = Icons.Filled.MoreVert,
-                                contentDescription = "More options",
-                                tint = MaterialTheme.colorScheme.onBackground,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = expandedUri == song.uri,
-                            onDismissRequest = { expandedUri = null }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Add to playlist") },
-                                onClick = {
-                                    expandedUri = null
-                                    menuSong = song
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete song") },
-                                onClick = {
-                                    expandedUri = null
-                                    songToDelete = song
-                                }
-                            )
-                        }
-                    }
                 }
             }
+        }
+    } else {
+        Column(modifier) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { selected = null }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+                Text(
+                    text = current,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = 18.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            songUI(
+                songs = currentSongs,
+                onSongClick = { i -> onSongClick(currentSongs, i) },
+                modifier = Modifier.weight(1f),
+                playlists = playlists,
+                onToggleSong = onToggleSong,
+                onDeleteSong = onDeleteSong,
+                onPlayNext = onPlayNext,
+                onAddToQueue = onAddToQueue,
+                onPlayAll = { onPlayAll(currentSongs) },
+                onShuffleAll = { onShuffleAll(currentSongs) }
+            )
         }
     }
 }
@@ -641,6 +1105,8 @@ fun playlistUI(
     onDeletePlaylist: (String) -> Unit,
     onToggleSong: (String, Uri) -> Unit,
     onDeleteSong: (Song) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onAddToQueue: (Song) -> Unit,
     onPlayAll: (List<Song>) -> Unit,
     onShuffleAll: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
@@ -715,7 +1181,7 @@ fun playlistUI(
                         .fillMaxWidth()
                         .height(70.dp)
                         .padding(5.dp)
-                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .rowStyle()
                         .clickable { showCreate = true },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -738,7 +1204,7 @@ fun playlistUI(
                         .fillMaxWidth()
                         .height(85.dp)
                         .padding(5.dp)
-                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .rowStyle()
                         .clickable { selectedId = p.id },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -808,7 +1274,7 @@ fun playlistUI(
                                 .fillMaxWidth()
                                 .height(85.dp)
                                 .padding(5.dp)
-                                .border(3.dp, MaterialTheme.colorScheme.outline),
+                                .rowStyle(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             SongArtwork(
@@ -879,6 +1345,8 @@ fun playlistUI(
                     playlists = playlists,
                     onToggleSong = onToggleSong,
                     onDeleteSong = onDeleteSong,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
                     onPlayAll = { onPlayAll(playlistSongs) },
                     onShuffleAll = { onShuffleAll(playlistSongs) }
                 )
@@ -900,6 +1368,8 @@ fun folderUI(
     playlists: List<Playlist>,
     onToggleSong: (String, Uri) -> Unit,
     onDeleteSong: (Song) -> Unit,
+    onPlayNext: (Song) -> Unit,
+    onAddToQueue: (Song) -> Unit,
     onPlayAll: (List<Song>) -> Unit,
     onShuffleAll: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
@@ -951,7 +1421,7 @@ fun folderUI(
                         .fillMaxWidth()
                         .height(70.dp)
                         .padding(5.dp)
-                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .rowStyle()
                         .clickable { onAddFolder() },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -974,7 +1444,7 @@ fun folderUI(
                         .fillMaxWidth()
                         .height(85.dp)
                         .padding(5.dp)
-                        .border(3.dp, MaterialTheme.colorScheme.outline)
+                        .rowStyle()
                         .clickable { selected = source },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1032,6 +1502,8 @@ fun folderUI(
                 playlists = playlists,
                 onToggleSong = onToggleSong,
                 onDeleteSong = onDeleteSong,
+                onPlayNext = onPlayNext,
+                onAddToQueue = onAddToQueue,
                 onPlayAll = { onPlayAll(folderSongs) },
                 onShuffleAll = { onShuffleAll(folderSongs) }
             )
@@ -1050,7 +1522,8 @@ fun NowPlayingPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     albumArt: ImageBitmap?,
-    albumArtColor: Color?
+    albumArtColor: Color?,
+    progress: () -> Float = { 0f }   // 0..1, read while drawing so it doesn't recompose the list
 ) {
 
     Row(
@@ -1060,6 +1533,15 @@ fun NowPlayingPill(
             .clip(RoundedCornerShape(12.dp))
             .clickable { onClick() }
             .background(color = albumArtColor ?: MaterialTheme.colorScheme.surfaceVariant)
+            .drawWithContent {
+                drawContent()
+                val h = 2.dp.toPx()
+                drawRect(
+                    color = Color.White.copy(alpha = 0.85f),
+                    topLeft = Offset(0f, size.height - h),
+                    size = Size(size.width * progress().coerceIn(0f, 1f), h)
+                )
+            }
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1135,6 +1617,9 @@ fun HomeScreenPreview() {
     ZoneTheme {
         HomeScreenUI(
             hasFolder = true,
+            sortMode = SortMode.TITLE,
+            onSortChange = {},
+            scanning = false,
             onAddFolder = {},
             folderSources = emptySet(),
             onRemoveFolder = {},
@@ -1147,6 +1632,8 @@ fun HomeScreenPreview() {
             onDeletePlaylist = {},
             onToggleSong = { _, _ -> },
             onDeleteSong = {},
+            onPlayNext = {},
+            onAddToQueue = {},
             onPlayAll = {},
             onShuffleAll = {}
         )
@@ -1277,7 +1764,7 @@ fun SongArtwork(uri: Uri, modifier: Modifier = Modifier) {
 }
 
 // Turns a folder's long address into a short name that is easy to read
-private fun folderName(source: String): String {
+fun folderName(source: String): String {
     val last = source.toUri().lastPathSegment ?: return "Folder"
     return last.substringAfterLast(':').substringAfterLast('/').ifEmpty { "Folder" }
 }

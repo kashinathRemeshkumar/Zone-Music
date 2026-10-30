@@ -89,6 +89,11 @@ class PlaylistStore(context: Context) {
         }
     }
 
+    /** Used when a song's file is deleted, so it leaves every playlist (and the counts stay right). */
+    fun removeSongEverywhere(uri: Uri) {
+        update { oldList -> oldList.map { p -> p.copy(uris = p.uris.filter { it != uri }) } }
+    }
+
     fun deletePlaylist(id: String) {
         if (id == LIKED_ID) return
         update { oldList -> oldList.filter { it.id != id } }

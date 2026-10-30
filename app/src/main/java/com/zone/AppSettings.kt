@@ -22,6 +22,7 @@ object SettingsKeys {
     val shuffle = booleanPreferencesKey("shuffle")
     val repeatMode = intPreferencesKey("repeat_mode")
     val queueUris = stringPreferencesKey("queue_uris")   // queue in play order, one uri per line
+    val sortMode = intPreferencesKey("sort_mode")          // index into SortMode
 }
 
 class AppSettings(private val context: Context) {
@@ -51,6 +52,10 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    suspend fun saveSortMode(mode: Int) {
+        context.dataStore.edit { it[SettingsKeys.sortMode] = mode }
+    }
+
     suspend fun saveLastPosition(position: Long) {
         context.dataStore.edit { it[SettingsKeys.lastPosition] = position }
     }
@@ -73,6 +78,9 @@ class AppSettings(private val context: Context) {
 
     val lastPosition: Flow<Long?> =
         context.dataStore.data.map { it[SettingsKeys.lastPosition] }
+
+    val sortMode: Flow<Int> =
+        context.dataStore.data.map { it[SettingsKeys.sortMode] ?: 0 }
 
     val shuffle: Flow<Boolean?> =
         context.dataStore.data.map { it[SettingsKeys.shuffle] }

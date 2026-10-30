@@ -21,6 +21,7 @@ class SongCache(context: Context) {
                     .put("artist", song.artist)
                     .put("album", song.album)
                     .put("source", song.source)
+                    .put("lastModified", song.lastModified)
             )
         }
         file.writeText(array.toString())
@@ -38,7 +39,8 @@ class SongCache(context: Context) {
                     title = o.getString("title"),
                     artist = o.getString("artist"),
                     album = o.getString("album"),
-                    source = o.getString("source")
+                    source = o.getString("source"),
+                    lastModified = o.optLong("lastModified", 0L)
                 )
             }
         } catch (e: Exception) {
